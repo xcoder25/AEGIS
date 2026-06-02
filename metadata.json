@@ -1,0 +1,8 @@
+{
+  "name": "AegisAI",
+  "description": "AegisAI - Production-grade multi-asset trading terminal powered by real-time WebSocket ticker updates, advanced risk management controls, and smart server-side Gemini AI Copilot analysis integrations.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

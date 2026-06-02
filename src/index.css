@@ -1,0 +1,198 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "system-ui", "-apple-system", sans-serif;
+  --font-display: "Space Grotesk", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+  
+  --color-zinc-950: #0a0a0c;
+  --color-zinc-900: #121214;
+  --color-zinc-800: #1d1d21;
+}
+
+/* Custom global overrides for Sleek Interface theme */
+
+body, html, #root {
+  background-color: #09090b !important;
+  color: #f1f5f9 !important;
+  font-family: "Inter", "system-ui", "-apple-system", sans-serif;
+}
+
+/* Glassmorphism containers and cards default configuration */
+.bg-slate-900\/40,
+.bg-slate-900\/80,
+.bg-\[\#090b11\]\/80,
+.bg-slate-900,
+.bg-slate-950 {
+  background-color: rgba(18, 18, 20, 0.45) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  border-color: rgba(255, 255, 255, 0.05) !important;
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.03), 0 4px 30px rgba(0, 0, 0, 0.25) !important;
+}
+
+/* App Main Background Overrides */
+.bg-\[\#090b11\], .bg-slate-950 {
+  background-color: #09090b !important;
+}
+
+/* Sidebar and Topbar background layouts */
+aside#sidebar-container {
+  background-color: #09090b !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.05) !important;
+}
+
+header {
+  background-color: rgba(9, 9, 11, 0.8) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+}
+
+/* High Contrast Accent Hover animations and effects */
+button, a {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+/* Custom rounded states and glowing shadows */
+.border-slate-800\/80,
+.border-slate-800,
+.border-slate-900,
+.border-slate-850,
+.border-slate-750,
+.border-slate-900\/80 {
+  border-color: rgba(255, 255, 255, 0.06) !important;
+}
+
+/* Smooth sleek scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #09090b;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+}
+
+/* Glow effects for success, buy & sell buttons */
+.text-emerald-400 {
+  color: #10b981 !important;
+  text-shadow: 0 0 8px rgba(16, 185, 129, 0.2) !important;
+}
+
+.text-rose-400, .text-rose-450, .text-red-400 {
+  color: #f43f5e !important;
+  text-shadow: 0 0 8px rgba(244, 63, 94, 0.2) !important;
+}
+
+.bg-emerald-950\/80, .bg-emerald-500\/10 {
+  background-color: rgba(16, 185, 129, 0.08) !important;
+  border-color: rgba(16, 185, 129, 0.2) !important;
+}
+
+.bg-indigo-950\/80, .bg-indigo-500\/10 {
+  background-color: rgba(99, 102, 241, 0.08) !important;
+  border-color: rgba(99, 102, 241, 0.2) !important;
+}
+
+.bg-rose-950\/50, .bg-rose-900\/50, .bg-rose-500\/10 {
+  background-color: rgba(244, 63, 94, 0.08) !important;
+  border-color: rgba(244, 63, 94, 0.2) !important;
+}
+
+/* Sleek inputs UI enhancement */
+input, select, textarea {
+  background-color: #050507 !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  color: #f8fafc !important;
+  transition: border-color 0.2s, box-shadow 0.2s !important;
+}
+
+input:focus, select:focus, textarea:focus {
+  border-color: rgba(99, 102, 241, 0.4) !important;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15) !important;
+  outline: none !important;
+}
+
+/* Active navigation item premium effect */
+.bg-slate-905, .text-emerald-400.text-shadow {
+  background-color: rgba(255, 255, 255, 0.04) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  color: #6366f1 !important; /* Switch nav highlight to Indigo for a premium futuristic feel */
+  box-shadow: 0 0 15px rgba(99, 102, 241, 0.1) !important;
+}
+
+@keyframes scanLineAnimation {
+  0% { top: 0%; opacity: 0.8; }
+  50% { top: 100%; opacity: 0.8; }
+  100% { top: 0%; opacity: 0.8; }
+}
+
+@keyframes fadeInAnimation {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shakeAnimation {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+.animate-scan-line {
+  animation: scanLineAnimation 2s infinite ease-in-out !important;
+}
+
+.animate-fadeIn {
+  animation: fadeInAnimation 0.35s ease-out forwards !important;
+}
+
+.animate-shake {
+  animation: shakeAnimation 0.25s ease-in-out 2 !important;
+}
+
+@keyframes jitter1 {
+  0%, 100% { transform: translate(0, 0); }
+  20% { transform: translate(1px, -0.5px); }
+  40% { transform: translate(-0.5px, 1px); }
+  60% { transform: translate(-1px, -1px); }
+  80% { transform: translate(0.5px, 1.5px); }
+}
+
+@keyframes jitter2 {
+  0%, 100% { transform: translate(0, 0); }
+  15% { transform: translate(-1px, 0.5px); }
+  35% { transform: translate(1px, -1.2px); }
+  55% { transform: translate(-0.5px, 1px); }
+  75% { transform: translate(1.2px, 0.5px); }
+}
+
+@keyframes jitter3 {
+  0%, 100% { transform: translate(0, 0); }
+  30% { transform: translate(0.8px, 1.2px); }
+  60% { transform: translate(-1.2px, -0.6px); }
+  90% { transform: translate(0.6px, -1px); }
+}
+
+.animate-jitter-1 {
+  animation: jitter1 0.4s infinite ease-in-out !important;
+}
+
+.animate-jitter-2 {
+  animation: jitter2 0.5s infinite ease-in-out !important;
+}
+
+.animate-jitter-3 {
+  animation: jitter3 0.45s infinite ease-in-out !important;
+}
+

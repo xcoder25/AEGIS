@@ -1,0 +1,121 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Catch-all fallback default-deny layer at the core
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- GLOBAL STABLE REUSABLE HELPERS ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // --- ENTITY-SPECIFIC VALIDATION BLUEPRINTS ---
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['name', 'email', 'avatar', 'registeredAt', 'role'])
+        && data.keys().size() >= 5
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && data.email is string && data.email.size() > 0 && data.email.size() <= 150
+        && data.avatar is string && data.avatar.size() > 0 && data.avatar.size() <= 60
+        && data.registeredAt is string && data.registeredAt.size() > 0
+        && data.role is string && data.role.size() > 0 && data.role.size() <= 80
+        && (data.role == 'Senior Portfolio Analyst' || data.role == 'Chief Risk Officer' || data.role == 'Junior Analyst')
+        && (!data.keys().hasAny(['touchIdEnrolled']) || data.touchIdEnrolled is bool)
+        && (!data.keys().hasAny(['faceIdEnrolled']) || data.faceIdEnrolled is bool)
+        && (!data.keys().hasAny(['brokerApiKey']) || data.brokerApiKey is string)
+        && (!data.keys().hasAny(['brokerApiSecret']) || data.brokerApiSecret is string);
+    }
+
+    function isValidSecurityLog(data) {
+      return data.keys().hasAll(['id', 'event', 'ip', 'timestamp'])
+        && data.keys().size() == 4
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.event is string && data.event.size() > 0 && data.event.size() <= 1000
+        && data.ip is string && data.ip.size() > 0 && data.ip.size() <= 45
+        && data.timestamp is string && data.timestamp.size() > 0;
+    }
+
+    function isValidPastTrade(data) {
+      return data.keys().hasAll(['id', 'symbol', 'assetClass', 'direction', 'size', 'entryPrice', 'exitPrice', 'pnl', 'pnlPercent', 'status', 'timestamp', 'execTime'])
+        && data.keys().size() == 12
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.symbol is string && data.symbol.size() > 0 && data.symbol.size() <= 15
+        && data.assetClass is string && (data.assetClass == 'forex' || data.assetClass == 'crypto' || data.assetClass == 'commodity' || data.assetClass == 'index')
+        && data.direction is string && (data.direction == 'long' || data.direction == 'short')
+        && data.size is number && data.size > 0
+        && data.entryPrice is number && data.entryPrice >= 0
+        && data.exitPrice is number && data.exitPrice >= 0
+        && data.pnl is number
+        && data.pnlPercent is number
+        && data.status is string && (data.status == 'profit' || data.status == 'loss')
+        && data.timestamp is string && data.timestamp.size() > 0
+        && data.execTime is string && data.execTime.size() > 0;
+    }
+
+    function isValidTradeMemory(data) {
+      return data.keys().hasAll(['id', 'symbol', 'strategy', 'regime', 'pnl', 'type', 'details', 'timestamp'])
+        && data.keys().size() == 8
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.symbol is string && data.symbol.size() > 0 && data.symbol.size() <= 15
+        && data.strategy is string && data.strategy.size() > 0 && data.strategy.size() <= 100
+        && data.regime is string && data.regime.size() > 0 && data.regime.size() <= 100
+        && data.pnl is number
+        && data.type is string && (data.type == 'win' || data.type == 'loss')
+        && data.details is string && data.details.size() > 0 && data.details.size() <= 2000
+        && data.timestamp is string && data.timestamp.size() > 0;
+    }
+
+    // --- CORES & PATH SYSTEMS ---
+
+    // Parent Users profile resource
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUserProfile(incoming());
+      // Operators cannot modify their established identities or roles, only parameters or enrolled flags
+      allow update: if isOwner(userId) 
+        && isValidUserProfile(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'avatar', 'brokerApiKey', 'brokerApiSecret', 'touchIdEnrolled', 'faceIdEnrolled']);
+      allow delete: if false; // System operators cannot be deleted from the keyring via standard clients
+
+      // Nested Security logs audit ledger
+      match /securityLogs/{logId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(logId) && isValidSecurityLog(incoming());
+        allow update, delete: if false; // Security logs are strictly immutable 
+      }
+
+      // Live past trades history log
+      match /trades/{tradeId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(tradeId) && isValidPastTrade(incoming());
+        allow update, delete: if false; // Archive trade ledger entries are strictly immutable
+      }
+
+      // Compiled AI trade learning insights
+      match /memories/{memoryId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(memoryId) && isValidTradeMemory(incoming());
+        allow update, delete: if false; // Dynamic system insights are immutable on operator review
+      }
+    }
+  }
+}

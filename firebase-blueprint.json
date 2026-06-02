@@ -1,0 +1,194 @@
+{
+  "entities": {
+    "userProfile": {
+      "title": "UserProfile",
+      "description": "User profile with avatar, broker API key references, role, registration details, and enrolled biometrics configuration statuses.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Full name or alias of the operator"
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address of the operator"
+        },
+        "avatar": {
+          "type": "string",
+          "description": "Avatar tailwind color design scheme identifier class"
+        },
+        "brokerApiKey": {
+          "type": "string",
+          "description": "Enrypted or masked linked exchange broker api key"
+        },
+        "brokerApiSecret": {
+          "type": "string",
+          "description": "Enrypted or masked linked exchange broker api secret"
+        },
+        "registeredAt": {
+          "type": "string",
+          "description": "ISO 8601 creation timestamp string"
+        },
+        "role": {
+          "type": "string",
+          "description": "Active authority role title of the operator within the Aegis system"
+        },
+        "touchIdEnrolled": {
+          "type": "boolean",
+          "description": "Whether device Touch ID biometric key is enrolled and enabled for the user"
+        },
+        "faceIdEnrolled": {
+          "type": "boolean",
+          "description": "Whether device Face ID biometric neural grid is enrolled and enabled for the user"
+        }
+      },
+      "required": ["name", "email", "avatar", "registeredAt", "role"]
+    },
+    "securityLog": {
+      "title": "SecurityLog",
+      "description": "Audit trails logging system access, biometric overrides, API actions, and security status signals.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique cryptographic audit transaction identity"
+        },
+        "event": {
+          "type": "string",
+          "description": "Detailed explanation of the logged event payload"
+        },
+        "ip": {
+          "type": "string",
+          "description": "IP tracker address recording security action context"
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "ISO 8601 temporal mark for the incident"
+        }
+      },
+      "required": ["id", "event", "ip", "timestamp"]
+    },
+    "pastTrade": {
+      "title": "PastTrade",
+      "description": "Archive recording historical active/closed trade contracts and verified execution yields.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique transaction identity within trading register"
+        },
+        "symbol": {
+          "type": "string",
+          "description": "Financial asset symbol contract"
+        },
+        "assetClass": {
+          "type": "string",
+          "enum": ["forex", "crypto", "commodity", "index"],
+          "description": "Asset categorization group identifier"
+        },
+        "direction": {
+          "type": "string",
+          "enum": ["long", "short"],
+          "description": "Trading position direction vector"
+        },
+        "size": {
+          "type": "number",
+          "description": "Absolute contracts size or units volume"
+        },
+        "entryPrice": {
+          "type": "number",
+          "description": "Initial target purchase contract price value"
+        },
+        "exitPrice": {
+          "type": "number",
+          "description": "Target settlement realization contract price value"
+        },
+        "pnl": {
+          "type": "number",
+          "description": "Realized net dollar performance yield structure"
+        },
+        "pnlPercent": {
+          "type": "number",
+          "description": "Realized percentage rate return index"
+        },
+        "strategy": {
+          "type": "string",
+          "description": "Linked execution model blueprint strategy name"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["profit", "loss"],
+          "description": "Operational target outcome bracket status"
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "Start date for matching position entry action"
+        },
+        "execTime": {
+          "type": "string",
+          "description": "Completion timestamp for settlement action"
+        }
+      },
+      "required": ["id", "symbol", "assetClass", "direction", "size", "entryPrice", "exitPrice", "pnl", "pnlPercent", "status", "timestamp", "execTime"]
+    },
+    "tradeMemory": {
+      "title": "TradeMemory",
+      "description": "Chronicles recording experiential model parameters compiled by Copilot intelligence networks.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Crypto signature of the memory structure"
+        },
+        "symbol": {
+          "type": "string",
+          "description": "Symbol of the related asset"
+        },
+        "strategy": {
+          "type": "string",
+          "description": "Strategy utilized in extraction feedback loops"
+        },
+        "regime": {
+          "type": "string",
+          "description": "Recognized index environment behavior regime"
+        },
+        "pnl": {
+          "type": "number",
+          "description": "Performance offset dollar yield index"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["win", "loss"],
+          "description": "Realized signal outcome bucket classification state"
+        },
+        "details": {
+          "type": "string",
+          "description": "Text body detailing key machine learning observations"
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "Date code entry tracking record"
+        }
+      },
+      "required": ["id", "symbol", "strategy", "regime", "pnl", "type", "details", "timestamp"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "userProfile",
+      "description": "Stores user profiles with security, roles, bio key enrollments and api coordinates."
+    },
+    "users/{userId}/securityLogs/{logId}": {
+      "schema": "securityLog",
+      "description": "Log of security audits and biometrics status indicators related to the registered profile."
+    },
+    "users/{userId}/trades/{tradeId}": {
+      "schema": "pastTrade",
+      "description": "Past historical records on completed market contracts associated with the profile."
+    },
+    "users/{userId}/memories/{memoryId}": {
+      "schema": "tradeMemory",
+      "description": "Insights and learnings built by the Copilot backend system relating to the user."
+    }
+  }
+}
