@@ -271,6 +271,195 @@ async function startServer() {
         `Be concise, use layout points or bold headers where appropriate. ` +
         `Active Terminal context: ${contextSummary}`;
 
+      // NLP Command Parser - Intercept trading actions
+      const lowerPrompt = prompt.toLowerCase();
+      let executionFeedback = '';
+      
+      if (lowerPrompt.includes('buy ') || lowerPrompt.includes('long ')) {
+        const side = 'buy';
+        let symbol = '';
+        let amount = 0;
+        
+        if (lowerPrompt.includes('btc') || lowerPrompt.includes('bitcoin')) {
+          symbol = 'BTC/USDT';
+        } else if (lowerPrompt.includes('eth') || lowerPrompt.includes('ethereum')) {
+          symbol = 'ETH/USDT';
+        }
+        
+        if (symbol) {
+          const matches = lowerPrompt.match(/(?:buy|long)\s+([0-9.]+)/);
+          if (matches && matches[1]) {
+            amount = parseFloat(matches[1]);
+          } else {
+            const asset = markets.find(m => m.symbol === symbol);
+            const price = asset ? asset.price : 90000;
+            amount = parseFloat((3000 / price).toFixed(3));
+          }
+          
+          if (amount > 0) {
+            try {
+              const symbolClean = mapSymbolToCoinbase(symbol);
+              console.log(`[NLP Executive] Submitting live market order: ${side} ${amount} ${symbol} (${symbolClean})...`);
+              const order = await coinbaseClient.createMarketOrder(symbolClean, side, amount);
+              
+              const newPos: Position = {
+                id: order.id,
+                symbol,
+                assetClass: 'crypto',
+                direction: 'long',
+                size: order.amount || amount,
+                entryPrice: order.price || (markets.find(m => m.symbol === symbol)?.price || 0),
+                currentPrice: order.price || (markets.find(m => m.symbol === symbol)?.price || 0),
+                pnl: 0,
+                pnlPercent: 0,
+                margin: 3000,
+                isAuto: false,
+                timestamp: new Date().toISOString()
+              };
+              positions.push(newPos);
+              
+              const notifText = `REAL ORDER FILLED via NLP: Executed BUY order on ${symbol} of size ${newPos.size} at $${newPos.entryPrice}`;
+              notifications.unshift({
+                id: `notif-${Date.now()}`,
+                text: notifText,
+                timestamp: new Date().toLocaleTimeString(),
+                type: 'trade'
+              });
+              if (notifications.length > 50) notifications.pop();
+              
+              broadcast({
+                type: 'STATE_UPDATE',
+                payload: { positions, notifications }
+              });
+              
+              executionFeedback = `[NLP EXECUTION SUCCESSFUL]: I have placed a live market BUY order on Coinbase Advanced Trade for ${newPos.size} ${symbol} at an entry price of $${newPos.entryPrice}. Order ID: ${newPos.id}.`;
+            } catch (err: any) {
+              console.error('[NLP Executive] Order execution failed:', err);
+              executionFeedback = `[NLP EXECUTION FAILED]: Tried to execute live market BUY order for ${amount} ${symbol} on Coinbase, but the exchange returned an error: "${err.message || err}".`;
+            }
+          }
+        }
+      }
+      else if (lowerPrompt.includes('sell ') || lowerPrompt.includes('short ') || lowerPrompt.includes('close ')) {
+        let symbol = '';
+        if (lowerPrompt.includes('btc') || lowerPrompt.includes('bitcoin')) {
+          symbol = 'BTC/USDT';
+        } else if (lowerPrompt.includes('eth') || lowerPrompt.includes('ethereum')) {
+          symbol = 'ETH/USDT';
+        }
+        
+        if (symbol) {
+          const idx = positions.findIndex(p => p.symbol === symbol);
+          if (idx !== -1) {
+            const pos = positions[idx];
+            const side = pos.direction === 'long' ? 'sell' : 'buy';
+            const symbolClean = mapSymbolToCoinbase(pos.symbol);
+            
+            try {
+              console.log(`[NLP Executive] Closing live position: submitting market ${side} order for ${pos.size} ${pos.symbol} (${symbolClean})...`);
+              const order = await coinbaseClient.createMarketOrder(symbolClean, side, pos.size);
+              const exitPrice = order.price || pos.currentPrice;
+              
+              trades.unshift({
+                id: `trd-${Date.now()}`,
+                symbol: pos.symbol,
+                assetClass: pos.assetClass,
+                direction: pos.direction,
+                size: pos.size,
+                entryPrice: pos.entryPrice,
+                exitPrice,
+                pnl: pos.pnl,
+                pnlPercent: pos.pnlPercent,
+                strategy: 'NLP Copilot Exit',
+                status: pos.pnl >= 0 ? 'profit' : 'loss',
+                timestamp: new Date().toISOString(),
+                execTime: 'Live'
+              });
+              
+              positions.splice(idx, 1);
+              
+              const notifText = `REAL POSITION CLOSED via NLP: ${pos.symbol} at ${exitPrice}. PnL: $${pos.pnl.toFixed(2)}`;
+              notifications.unshift({
+                id: `notif-${Date.now()}`,
+                text: notifText,
+                timestamp: new Date().toLocaleTimeString(),
+                type: 'trade'
+              });
+              if (notifications.length > 50) notifications.pop();
+              
+              broadcast({
+                type: 'STATE_UPDATE',
+                payload: { positions, trades, notifications }
+              });
+              
+              executionFeedback = `[NLP EXECUTION SUCCESSFUL]: Closed your live ${pos.symbol} position of size ${pos.size} at exit price $${exitPrice}. Closed PnL impact: $${pos.pnl.toFixed(2)}.`;
+            } catch (err: any) {
+              console.error('[NLP Executive] Close order failed:', err);
+              executionFeedback = `[NLP EXECUTION FAILED]: Tried to close your live ${pos.symbol} position on Coinbase, but the exchange returned an error: "${err.message || err}".`;
+            }
+          } else {
+            executionFeedback = `[NLP INFORMATION]: You do not have any active open positions in ${symbol} to close.`;
+          }
+        }
+      }
+      else if (lowerPrompt.includes('close all') || lowerPrompt.includes('terminate all') || lowerPrompt.includes('emergency stop') || lowerPrompt.includes('panic')) {
+        if (positions.length > 0) {
+          const closedTrades: PastTrade[] = [];
+          const failedPositions: Position[] = [];
+          
+          for (const pos of positions) {
+            const side = pos.direction === 'long' ? 'sell' : 'buy';
+            let exitPrice = pos.currentPrice;
+            const symbolClean = mapSymbolToCoinbase(pos.symbol);
+            
+            try {
+              const order = await coinbaseClient.createMarketOrder(symbolClean, side, pos.size);
+              exitPrice = order.price || pos.currentPrice;
+              
+              closedTrades.push({
+                id: `trd-closed-${Date.now()}-${Math.random().toString(36).substring(3)}`,
+                symbol: pos.symbol,
+                assetClass: pos.assetClass,
+                direction: pos.direction,
+                size: pos.size,
+                entryPrice: pos.entryPrice,
+                exitPrice,
+                pnl: pos.pnl,
+                pnlPercent: pos.pnlPercent,
+                strategy: 'NLP Emergency Close',
+                status: pos.pnl >= 0 ? 'profit' : 'loss',
+                timestamp: new Date().toISOString(),
+                execTime: 'Live'
+              });
+            } catch (err: any) {
+              failedPositions.push(pos);
+            }
+          }
+          
+          trades.unshift(...closedTrades);
+          positions = failedPositions;
+          
+          const totalClosedPnL = closedTrades.reduce((acc, curr) => acc + curr.pnl, 0);
+          const notifText = `NLP Emergency Close: Terminated ${closedTrades.length} positions. Net closed PnL: $${totalClosedPnL.toFixed(2)}`;
+          notifications.unshift({
+            id: `notif-${Date.now()}`,
+            text: notifText,
+            timestamp: new Date().toLocaleTimeString(),
+            type: 'alert'
+          });
+          if (notifications.length > 50) notifications.pop();
+          
+          broadcast({
+            type: 'STATE_UPDATE',
+            payload: { positions, trades, notifications }
+          });
+          
+          executionFeedback = `[NLP EMERGENCY SUCCESSFUL]: Terminated all active position states on Coinbase Advanced Trade. Net closed PnL impact: $${totalClosedPnL.toFixed(2)}.`;
+        } else {
+          executionFeedback = `[NLP INFORMATION]: There are currently no open positions to close.`;
+        }
+      }
+
       const aiResponse = await ai.models.generateContent({
         model: 'gemini-3.5-flash',
         contents: prompt,
@@ -280,7 +469,10 @@ async function startServer() {
         },
       });
 
-      const replyText = aiResponse.text;
+      let replyText = aiResponse.text;
+      if (executionFeedback) {
+        replyText = `${executionFeedback}\n\n${replyText}`;
+      }
       return res.json({ reply: replyText });
 
     } catch (error: any) {
