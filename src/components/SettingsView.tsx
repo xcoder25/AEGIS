@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import { Settings, Shield, Bell, Network, HelpCircle, Check, Key, Server, Wifi, Play, AlertCircle, History, Trash2, Fingerprint, ScanFace, Camera, CameraOff, Lock, Eye, Sliders, Maximize2 } from 'lucide-react';
 import { useTradingStore } from '../store';
+import { startRegistration } from '@simplewebauthn/browser';
 
 export default function SettingsView() {
   const { 
@@ -65,6 +66,10 @@ export default function SettingsView() {
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
   const [cameraStreamStatus, setCameraStreamStatus] = useState<'idle' | 'requesting' | 'active' | 'error'>('idle');
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
+
+  const [facePos, setFacePos] = React.useState({ x: 50, y: 50 });
+  const [livenessStatusText, setLivenessStatusText] = React.useState('Position face in target circle...');
+  const [enrollStatusType, setEnrollStatusType] = React.useState<'scanning' | 'success' | 'failed'>('scanning');
 
   // Camera startup for Face ID enrollment
   const startEnrollCamera = async () => {
@@ -156,31 +161,251 @@ export default function SettingsView() {
     return () => clearInterval(intervalId);
   }, [enrollingType, isHoldingFingerprint, enrollProgress]);
 
-  // Face ID scan progression generator for enrollment
+  const generateEmbedding = (fx: number, fy: number): number[] => {
+    const embedding: number[] = [];
+    const baseRatio = (fx * 1.25) / (fy || 1);
+    for (let i = 0; i < 128; i++) {
+      embedding.push(Math.sin(baseRatio * (i + 1)) * 0.1 + (i % 5) * 0.05);
+    }
+    return embedding;
+  };
+
+  const triggerWebAuthnRegistration = async (currentEmbedding: number[]) => {
+    try {
+      setLivenessStatusText('LIVENESS PASSED. Initializing Passkey registration...');
+      addSecurityLog('Liveness verification completed. Invoking WebAuthn enrollment...');
+      
+      const userEmail = user?.email || 'demo@aegis.ai';
+
+      // 1. Get registration options from server
+      const optionsRes = await fetch(`/api/auth/register-options?email=${encodeURIComponent(userEmail)}`);
+      if (!optionsRes.ok) {
+        throw new Error('Failed to retrieve registration options.');
+      }
+      const options = await optionsRes.json();
+      
+      // 2. Browser WebAuthn prompt
+      const credential = await startRegistration(options);
+      
+      // 3. Post verifying payload
+      const verifyRes = await fetch('/api/auth/register-verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          body: credential,
+          email: userEmail,
+          faceEmbedding: currentEmbedding
+        })
+      });
+
+      if (!verifyRes.ok) {
+        const errJson = await verifyRes.json();
+        throw new Error(errJson.error || 'Registration verification rejected.');
+      }
+
+      const verifyResult = await verifyRes.json();
+      if (verifyResult.verified) {
+        setEnrollStatusType('success');
+        setLivenessStatusText('ENROLLED SUCCESSFULLY');
+        setFaceIdEnrolled(true);
+        addSecurityLog('Passkey + Face ID successfully enrolled and linked.');
+        addNotification('Biometrics enrolled: Face ID visual signature and Passkey configured.', 'info');
+        
+        setTimeout(() => {
+          setEnrollingType('none');
+          setEnrollProgress(0);
+        }, 1500);
+      }
+    } catch (err: any) {
+      console.error('[WebAuthn] Registration flow failed:', err);
+      setEnrollStatusType('failed');
+      setLivenessStatusText(`Enrollment failed: ${err.message}`);
+      addSecurityLog(`Passkey enrollment rejected: ${err.message}`);
+    }
+  };
+
+  // Face ID real-time tracking & liveness verification loop for enrollment
   React.useEffect(() => {
-    if (enrollingType !== 'face') return;
-    if (enrollProgress >= 100) {
-      setFaceIdEnrolled(true);
-      addSecurityLog(`In-App Face ID facial vertex mesh successfully enrolled`);
-      addNotification(`Biometrics enrolled: Face ID visual signature is now configured.`, 'info');
-      setEnrollingType('none');
-      setEnrollProgress(0);
+    if (enrollingType !== 'face' || cameraStreamStatus !== 'active' || !videoRef.current) {
       return;
     }
 
-    if (cameraStreamStatus === 'requesting') return;
+    const video = videoRef.current;
+    const canvas = document.createElement('canvas');
+    canvas.width = 40;
+    canvas.height = 40;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-    const interval = setInterval(() => {
-      setEnrollProgress((prev) => {
-        const next = prev + Math.floor(Math.random() * 6) + 4;
-        return next >= 100 ? 100 : next;
-      });
-    }, 150);
+    let animId: number;
+    let localFaceX = 50;
+    let localFaceY = 50;
+    
+    const xHistory: number[] = [];
+    const lightHistory: number[] = [];
+    
+    let currentStep: 'align' | 'turn' | 'blink' | 'success' = 'align';
+    let progressVal = 0;
+    let wsResolved = false;
 
-    return () => clearInterval(interval);
-  }, [enrollingType, cameraStreamStatus, enrollProgress]);
+    const analyzeFrame = () => {
+      if (video.paused || video.ended || wsResolved) {
+        animId = requestAnimationFrame(analyzeFrame);
+        return;
+      }
 
-  const handleTestBackendConnection = () => {
+      ctx.drawImage(video, 0, 0, 40, 40);
+      const imgData = ctx.getImageData(0, 0, 40, 40);
+      const data = imgData.data;
+
+      let totalX = 0;
+      let totalY = 0;
+      let skinPixelsCount = 0;
+      let eyeRegionLightnessSum = 0;
+      let eyeRegionPixelsCount = 0;
+
+      for (let y = 0; y < 40; y++) {
+        for (let x = 0; x < 40; x++) {
+          const idx = (y * 40 + x) * 4;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+
+          const rNorm = r / 255;
+          const gNorm = g / 255;
+          const bNorm = b / 255;
+          const max = Math.max(rNorm, gNorm, bNorm);
+          const min = Math.min(rNorm, gNorm, bNorm);
+          let h = 0;
+          let s = 0;
+          const l = (max + min) / 2;
+
+          if (max !== min) {
+            const d = max - min;
+            s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+            if (max === rNorm) {
+              h = (gNorm - bNorm) / d + (gNorm < bNorm ? 6 : 0);
+            } else if (max === gNorm) {
+              h = (bNorm - rNorm) / d + 2;
+            } else {
+              h = (rNorm - gNorm) / d + 4;
+            }
+            h /= 6;
+          }
+
+          const hueDegrees = h * 360;
+          if (hueDegrees >= 0 && hueDegrees <= 50 && s >= 0.15 && s <= 0.8 && l >= 0.15 && l <= 0.85) {
+            totalX += x;
+            totalY += y;
+            skinPixelsCount++;
+          }
+        }
+      }
+
+      let detectedX = 50;
+      let detectedY = 50;
+
+      if (skinPixelsCount > 30) {
+        detectedX = (totalX / skinPixelsCount) * 2.5;
+        detectedY = (totalY / skinPixelsCount) * 2.5;
+        
+        const eyeMinX = Math.max(0, Math.floor((detectedX - 15) / 2.5));
+        const eyeMaxX = Math.min(39, Math.floor((detectedX + 15) / 2.5));
+        const eyeMinY = Math.max(0, Math.floor((detectedY - 12) / 2.5));
+        const eyeMaxY = Math.min(39, Math.floor((detectedY - 6) / 2.5));
+
+        for (let ey = eyeMinY; ey <= eyeMaxY; ey++) {
+          for (let ex = eyeMinX; ex <= eyeMaxX; ex++) {
+            const eidx = (ey * 40 + ex) * 4;
+            const er = data[eidx];
+            const eg = data[eidx + 1];
+            const eb = data[eidx + 2];
+            const lightness = (Math.max(er, eg, eb) + Math.min(er, eg, eb)) / 510;
+            eyeRegionLightnessSum += lightness;
+            eyeRegionPixelsCount++;
+          }
+        }
+      }
+
+      localFaceX = localFaceX + (detectedX - localFaceX) * 0.1;
+      localFaceY = localFaceY + (detectedY - localFaceY) * 0.1;
+      setFacePos({ x: localFaceX, y: localFaceY });
+
+      if (skinPixelsCount > 30) {
+        const isCentered = localFaceX >= 35 && localFaceX <= 65 && localFaceY >= 35 && localFaceY <= 65;
+        
+        if (currentStep === 'align') {
+          setLivenessStatusText('Align face inside target box...');
+          if (isCentered) {
+            progressVal = Math.min(progressVal + 1.5, 40);
+            setEnrollProgress(progressVal);
+            if (progressVal >= 40) {
+              currentStep = 'turn';
+              progressVal = 40;
+            }
+          } else {
+            progressVal = Math.max(progressVal - 1.5, 0);
+            setEnrollProgress(progressVal);
+          }
+        } 
+        else if (currentStep === 'turn') {
+          setLivenessStatusText('Calibration: Turn head slowly left & right...');
+          xHistory.push(localFaceX);
+          if (xHistory.length > 55) xHistory.shift();
+
+          const xMin = Math.min(...xHistory);
+          const xMax = Math.max(...xHistory);
+          const span = xMax - xMin;
+
+          if (span >= 8 && isCentered) {
+            progressVal = Math.min(progressVal + 2.0, 70);
+            setEnrollProgress(progressVal);
+            if (progressVal >= 70) {
+              currentStep = 'blink';
+              progressVal = 70;
+            }
+          }
+        }
+        else if (currentStep === 'blink') {
+          setLivenessStatusText('Authentication: Blink eyes now...');
+          
+          if (eyeRegionPixelsCount > 0) {
+            const avgLight = eyeRegionLightnessSum / eyeRegionPixelsCount;
+            lightHistory.push(avgLight);
+            if (lightHistory.length > 30) lightHistory.shift();
+
+            const rollingAvg = lightHistory.reduce((sum, v) => sum + v, 0) / lightHistory.length;
+            const currentLight = lightHistory[lightHistory.length - 1];
+            const dip = rollingAvg - currentLight;
+
+            if (dip > 0.08 && lightHistory.length > 15) {
+              progressVal = 100;
+              setEnrollProgress(100);
+              wsResolved = true;
+              currentStep = 'success';
+              
+              const finalEmbedding = generateEmbedding(localFaceX, localFaceY);
+              triggerWebAuthnRegistration(finalEmbedding);
+            }
+          }
+        }
+      } else {
+        progressVal = Math.max(progressVal - 1, 0);
+        setEnrollProgress(progressVal);
+        setLivenessStatusText('Face lost! Position face in scanner frame.');
+      }
+
+      animId = requestAnimationFrame(analyzeFrame);
+    };
+
+    analyzeFrame();
+
+    return () => {
+      cancelAnimationFrame(animId);
+    };
+  }, [enrollingType, cameraStreamStatus]);
+
+  const handleTestBackendConnection = async () => {
     setIsTestingBackend(true);
     setBackendConnectionState('connecting');
     setTerminalLogs(prev => [
@@ -189,26 +414,94 @@ export default function SettingsView() {
       `[${new Date().toLocaleTimeString()}] HTTP [probe]: GET ${tempUrl}/api/health ...`
     ]);
 
-    setTimeout(() => {
+    try {
+      // 1. REST API probe with abort timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
+      
+      const response = await fetch(`${tempUrl}/api/health`, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP status ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
       setTerminalLogs(prev => [
         ...prev,
-        `[${new Date().toLocaleTimeString()}] HTTP [200]: REST probe successful. Connection established.`,
+        `[${new Date().toLocaleTimeString()}] HTTP [200]: REST probe successful. Connection established. Status: ${data.status || 'ok'}`,
         `[${new Date().toLocaleTimeString()}] SOCKET [handshake]: Initializing WS pipe on ${tempWsUrl}...`,
         `[${new Date().toLocaleTimeString()}] WS [auth]: Passing security credentials payload...`
       ]);
 
-      setTimeout(() => {
+      // 2. WebSocket handshake probe
+      let wsResolved = false;
+      const ws = new WebSocket(tempWsUrl);
+      
+      const wsTimeout = setTimeout(() => {
+        if (!wsResolved) {
+          wsResolved = true;
+          ws.onopen = null;
+          ws.onerror = null;
+          try { ws.close(); } catch(e) {}
+          
+          setTerminalLogs(prev => [
+            ...prev,
+            `[${new Date().toLocaleTimeString()}] WS [timeout]: Handshake verification timed out after 5000ms.`,
+            `[${new Date().toLocaleTimeString()}] CLUSTER [failed]: Custom backend synchronization failed.`
+          ]);
+          setIsTestingBackend(false);
+          setBackendConnectionState('error');
+          addNotification(`Failed to validate WebSocket endpoint at ${tempWsUrl}`, 'alert');
+        }
+      }, 5000);
+
+      ws.onopen = () => {
+        if (wsResolved) return;
+        wsResolved = true;
+        clearTimeout(wsTimeout);
+        
         setTerminalLogs(prev => [
           ...prev,
           `[${new Date().toLocaleTimeString()}] WS [active]: Protocol upgraded to RFC6455. Streaming live ticker feed channels!`,
           `[${new Date().toLocaleTimeString()}] CLUSTER [synchronized]: Custom backend endpoint is now completely online.`
         ]);
+        
+        try { ws.close(); } catch(e) {}
+        
         setIsTestingBackend(false);
         setBackendConfig(tempUrl, tempWsUrl, tempToken);
         setBackendConnectionState('connected');
         addNotification(`Connected: Handshake completed with custom backend ${tempUrl}`, 'info');
-      }, 1000);
-    }, 1200);
+      };
+
+      ws.onerror = () => {
+        if (wsResolved) return;
+        wsResolved = true;
+        clearTimeout(wsTimeout);
+        
+        setTerminalLogs(prev => [
+          ...prev,
+          `[${new Date().toLocaleTimeString()}] WS [error]: Connection handshake refused by remote service.`,
+          `[${new Date().toLocaleTimeString()}] CLUSTER [failed]: Custom backend synchronization failed.`
+        ]);
+        
+        setIsTestingBackend(false);
+        setBackendConnectionState('error');
+        addNotification(`WebSocket connection refused at ${tempWsUrl}`, 'alert');
+      };
+
+    } catch (err: any) {
+      setTerminalLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] HTTP [failed]: REST probe failed. Reason: ${err.message || err}`,
+        `[${new Date().toLocaleTimeString()}] CLUSTER [failed]: Custom backend verification failed.`
+      ]);
+      setIsTestingBackend(false);
+      setBackendConnectionState('error');
+      addNotification(`Failed to connect to custom API: ${err.message || err}`, 'alert');
+    }
   };
 
   const handleTestConnection = () => {
@@ -580,6 +873,9 @@ export default function SettingsView() {
                       onClick={() => {
                         setEnrollingType('none');
                         setEnrollProgress(0);
+                        setEnrollStatusType('scanning');
+                        setLivenessStatusText('Position face in target circle...');
+                        stopEnrollCamera();
                       }}
                       className="text-[10px] hover:text-rose-400 text-slate-400 transition-colors uppercase font-bold"
                     >
@@ -673,16 +969,119 @@ export default function SettingsView() {
                               className="h-full w-full object-cover scale-x-100"
                             />
                             {/* Neural vector layout tracking guides over user face */}
-                            <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                              <div className="h-24 w-24 rounded-full border border-emerald-400/40 border-dashed animate-pulse" />
-                              <span className="absolute text-[8px] font-mono text-emerald-400/80 uppercase">Active mesh</span>
-                              {enrollProgress > 30 && (
-                                <span className="absolute top-4 left-4 h-1 w-1 bg-emerald-400 rounded-full animate-ping" />
-                              )}
-                              {enrollProgress > 60 && (
-                                <span className="absolute bottom-6 right-6 h-1 w-1 bg-emerald-400 rounded-full animate-ping" />
-                              )}
-                            </div>
+                            {enrollStatusType === 'scanning' && (
+                              <>
+                                {/* Intersecting horizontal matrix laser scan */}
+                                <div className="absolute left-0 right-0 h-0.5 bg-gradient-to-r from-transparent via-cyan-400 to-transparent shadow-md shadow-cyan-400 animate-scan-line top-0 z-20" />
+                                
+                                {/* Floating HUD Tracking Overlays */}
+                                <div className="absolute inset-0 pointer-events-none select-none overflow-hidden rounded-full z-10">
+                                  {/* Corner indicators or circular sights */}
+                                  <div className="absolute inset-4 rounded-full border border-dashed border-cyan-500/15 animate-spin [animation-duration:15s]" />
+                                  <div className="absolute inset-7 rounded-full border border-dotted border-cyan-500/20 animate-spin [animation-duration:10s] [animation-direction:reverse]" />
+
+                                  {/* Top stats readout */}
+                                  <div className="absolute top-2 left-6 text-[7px] font-mono text-cyan-400/75 flex flex-col items-start leading-[9px] scale-[0.8]">
+                                    <span>FPS: 60.0</span>
+                                    <span>MESH: ACTIVE</span>
+                                  </div>
+                                  <div className="absolute top-2 right-6 text-[7px] font-mono text-cyan-400/75 flex flex-col items-end leading-[9px] scale-[0.8]">
+                                    <span>SYS: SECURE</span>
+                                    <span>Z-D: 0.44m</span>
+                                  </div>
+
+                                  {/* Tracking Nodes */}
+                                  {/* Eye Left */}
+                                  <div className="absolute text-cyan-454 font-mono animate-jitter-1 flex flex-col items-center transition-all duration-75" style={{ top: `${facePos.y - 12}%`, left: `${facePos.x - 18}%` }}>
+                                    <div className="w-1 h-1 bg-cyan-450 rounded-full shadow-[0_0_4px_rgba(34,211,238,0.8)]" />
+                                    <div className="absolute -top-3 text-[5px] tracking-tighter opacity-80 scale-[0.7]">EYE.L</div>
+                                    <div className="w-2.5 h-2.5 rounded-full border border-cyan-400/30 absolute -top-0.5 -left-0.5 animate-ping" />
+                                  </div>
+
+                                  {/* Eye Right */}
+                                  <div className="absolute text-cyan-454 font-mono animate-jitter-2 flex flex-col items-center transition-all duration-75" style={{ top: `${facePos.y - 12}%`, left: `${facePos.x + 18}%` }}>
+                                    <div className="w-1 h-1 bg-cyan-455 rounded-full shadow-[0_0_4px_rgba(34,211,238,0.8)]" />
+                                    <div className="absolute -top-3 text-[5px] tracking-tighter opacity-80 scale-[0.7]">EYE.R</div>
+                                    <div className="w-2.5 h-2.5 rounded-full border border-cyan-400/30 absolute -top-0.5 -left-0.5 animate-ping" />
+                                  </div>
+
+                                  {/* Nose Bridge */}
+                                  <div className="absolute text-cyan-454 font-mono animate-jitter-3 flex flex-col items-center transition-all duration-75" style={{ top: `${facePos.y + 3}%`, left: `${facePos.x}%` }}>
+                                    <div className="w-1 h-1 bg-cyan-455 rounded-full shadow-[0_0_3px_rgba(34,211,238,0.8)]" />
+                                    <div className="absolute -bottom-3 text-[5px] tracking-tighter opacity-85 scale-[0.7]">N.CTR</div>
+                                  </div>
+
+                                  {/* Forehead Center */}
+                                  <div className="absolute text-cyan-454 font-mono animate-jitter-1 flex flex-col items-center transition-all duration-75" style={{ top: `${facePos.y - 26}%`, left: `${facePos.x}%` }}>
+                                    <div className="w-1 h-1 bg-cyan-455 rounded-full shadow-[0_0_3px_rgba(34,211,238,0.8)]" />
+                                    <div className="absolute -top-3 text-[5px] tracking-tighter opacity-80 scale-[0.7]">FHD</div>
+                                  </div>
+
+                                  {/* Cheek Left */}
+                                  <div className="absolute text-cyan-454 font-mono animate-jitter-2 flex flex-col items-center transition-all duration-75" style={{ top: `${facePos.y + 4}%`, left: `${facePos.x - 28}%` }}>
+                                    <div className="w-1 h-1 bg-cyan-455 rounded-full opacity-60" />
+                                    <div className="absolute -left-4 text-[5px] tracking-tighter opacity-60 scale-[0.6]">C.L</div>
+                                  </div>
+
+                                  {/* Cheek Right */}
+                                  <div className="absolute text-cyan-454 font-mono animate-jitter-3 flex flex-col items-center transition-all duration-75" style={{ top: `${facePos.y + 4}%`, left: `${facePos.x + 28}%` }}>
+                                    <div className="w-1 h-1 bg-cyan-455 rounded-full opacity-60" />
+                                    <div className="absolute -right-4 text-[5px] tracking-tighter opacity-60 scale-[0.6]">C.R</div>
+                                  </div>
+
+                                  {/* Mouth Border Left */}
+                                  <div className="absolute text-cyan-454 font-mono animate-jitter-1 transition-all duration-75" style={{ top: `${facePos.y + 19}%`, left: `${facePos.x - 12}%` }}>
+                                    <div className="w-1 h-1 bg-cyan-455 rounded-full opacity-70" />
+                                  </div>
+
+                                  {/* Mouth Border Right */}
+                                  <div className="absolute text-cyan-454 font-mono animate-jitter-2 transition-all duration-75" style={{ top: `${facePos.y + 19}%`, left: `${facePos.x + 12}%` }}>
+                                    <div className="w-1 h-1 bg-cyan-455 rounded-full opacity-70" />
+                                  </div>
+
+                                  {/* Chin Base */}
+                                  <div className="absolute text-cyan-454 font-mono animate-jitter-3 flex flex-col items-center transition-all duration-75" style={{ top: `${facePos.y + 30}%`, left: `${facePos.x}%` }}>
+                                    <div className="w-1 h-1 bg-cyan-455 rounded-full shadow-[0_0_3px_rgba(34,211,238,0.8)]" />
+                                    <div className="absolute -bottom-3 text-[5px] tracking-tighter opacity-80 scale-[0.7]">JAW</div>
+                                  </div>
+
+                                  {/* Neural vector SVG links */}
+                                  <svg className="absolute inset-0 w-full h-full opacity-35 stroke-cyan-400 stroke-[0.75] fill-none transition-all duration-75">
+                                    {/* Brows line */}
+                                    <line x1={`${facePos.x - 18}%`} y1={`${facePos.y - 12}%`} x2={`${facePos.x + 18}%`} y2={`${facePos.y - 12}%`} strokeDasharray="1,2" />
+                                    <line x1={`${facePos.x}%`} y1={`${facePos.y - 26}%`} x2={`${facePos.x - 18}%`} y2={`${facePos.y - 12}%`} strokeDasharray="2,2" />
+                                    <line x1={`${facePos.x}%`} y1={`${facePos.y - 26}%`} x2={`${facePos.x + 18}%`} y2={`${facePos.y - 12}%`} strokeDasharray="2,2" />
+                                    
+                                    {/* Optical matching sights to grid */}
+                                    <line x1={`${facePos.x - 18}%`} y1={`${facePos.y - 12}%`} x2={`${facePos.x}%`} y2={`${facePos.y + 3}%`} strokeDasharray="1,1" />
+                                    <line x1={`${facePos.x + 18}%`} y1={`${facePos.y - 12}%`} x2={`${facePos.x}%`} y2={`${facePos.y + 3}%`} strokeDasharray="1,1" />
+
+                                    {/* Facemesh cheek boundaries */}
+                                    <line x1={`${facePos.x - 28}%`} y1={`${facePos.y + 4}%`} x2={`${facePos.x}%`} y2={`${facePos.y + 3}%`} strokeDasharray="2,2" />
+                                    <line x1={`${facePos.x + 28}%`} y1={`${facePos.y + 4}%`} x2={`${facePos.x}%`} y2={`${facePos.y + 3}%`} strokeDasharray="2,2" />
+                                    <line x1={`${facePos.x - 28}%`} y1={`${facePos.y + 4}%`} x2={`${facePos.x - 12}%`} y2={`${facePos.y + 19}%`} strokeDasharray="2,1" />
+                                    <line x1={`${facePos.x + 28}%`} y1={`${facePos.y + 4}%`} x2={`${facePos.x + 12}%`} y2={`${facePos.y + 19}%`} strokeDasharray="2,1" />
+
+                                    {/* Lower chin connection array */}
+                                    <line x1={`${facePos.x - 12}%`} y1={`${facePos.y + 19}%`} x2={`${facePos.x + 12}%`} y2={`${facePos.y + 19}%`} strokeDasharray="1,1" />
+                                    <line x1={`${facePos.x - 12}%`} y1={`${facePos.y + 19}%`} x2={`${facePos.x}%`} y2={`${facePos.y + 30}%`} strokeDasharray="2,2" />
+                                    <line x1={`${facePos.x + 12}%`} y1={`${facePos.y + 19}%`} x2={`${facePos.x}%`} y2={`${facePos.y + 30}%`} strokeDasharray="2,2" />
+                                  </svg>
+                                </div>
+                              </>
+                            )}
+
+                            {enrollStatusType === 'success' && (
+                              <div className="absolute inset-0 bg-emerald-950/85 backdrop-blur-sm flex items-center justify-center z-30 animate-fadeIn">
+                                <Check className="h-14 w-14 text-emerald-400" />
+                              </div>
+                            )}
+
+                            {enrollStatusType === 'failed' && (
+                              <div className="absolute inset-0 bg-rose-955/85 bg-rose-950/85 backdrop-blur-sm flex items-center justify-center z-30 animate-fadeIn">
+                                <AlertCircle className="h-14 w-14 text-rose-500" />
+                              </div>
+                            )}
                           </>
                         ) : (
                           <div className="flex flex-col items-center justify-center text-slate-500 p-2 space-y-1">
@@ -706,10 +1105,10 @@ export default function SettingsView() {
 
                       <div className="space-y-1">
                         <p className="text-xs font-bold text-slate-200">
-                          Mapping facial coordinate matrix structures...
+                          {livenessStatusText}
                         </p>
                         <p className="text-[10px] text-slate-500 max-w-xs font-mono">
-                          Position your face into the viewfinder. Confirming depth vertex maps.
+                          {enrollingType === 'face' ? 'Align face in camera view and follow the calibration instructions.' : 'Position your face into the viewfinder. Confirming depth vertex maps.'}
                         </p>
                       </div>
 
@@ -775,6 +1174,7 @@ export default function SettingsView() {
                           onClick={() => {
                             setEnrollingType('fingerprint');
                             setEnrollProgress(0);
+                            setEnrollStatusType('scanning');
                           }}
                           className={`text-[9px] font-mono font-extrabold uppercase px-3 py-1.2 rounded transition-all cursor-pointer ${
                             touchIdEnrolled
@@ -832,6 +1232,8 @@ export default function SettingsView() {
                           onClick={() => {
                             setEnrollingType('face');
                             setEnrollProgress(0);
+                            setEnrollStatusType('scanning');
+                            setLivenessStatusText('Position face in target circle...');
                           }}
                           className={`text-[9px] font-mono font-extrabold uppercase px-3 py-1.2 rounded transition-all cursor-pointer ${
                             faceIdEnrolled

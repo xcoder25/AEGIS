@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useTradingStore } from './store';
+import { initWebSocket } from './lib/socketClient';
 
 // Importing Viewports
 import Sidebar from './components/Sidebar';
@@ -33,6 +34,7 @@ export default function App() {
     updateMarkets, 
     positions, 
     addNotification, 
+    wsStatus,
     setWsStatus,
     autoTradingEnabled,
     signals,
@@ -45,19 +47,31 @@ export default function App() {
     isOnboardingCompleted
   } = useTradingStore();
 
-  // 1. Initial Handshake WebSocket simulator
+  // 1. Live WebSocket connection manager
   useEffect(() => {
-    setWsStatus('connecting');
-    const handshakeTimer = setTimeout(() => {
-      setWsStatus('connected');
-      addNotification('Secure WebSocket bridge established with Binance Pro ledger gateway.', 'info');
-    }, 1800);
+    let url = '';
+    const state = useTradingStore.getState();
+    if (state.backendMode === 'simulated') {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      url = `${protocol}//${window.location.host}`;
+    } else {
+      url = state.backendWsUrl;
+    }
 
-    return () => clearTimeout(handshakeTimer);
-  }, []);
+    const socketManager = initWebSocket(url);
 
-  // 2. High-precision Real-time Price and PnL ticker updates (WebSocket replication)
+    return () => {
+      socketManager.close();
+    };
+  }, [useTradingStore((state) => state.backendMode), useTradingStore((state) => state.backendWsUrl)]);
+
+  // 2. High-precision Real-time Price and PnL ticker updates (Resilient Offline Fallback)
   useEffect(() => {
+    // Only run simulated ticks if WebSocket is disconnected
+    if (wsStatus === 'connected') {
+      return;
+    }
+
     const ticker = setInterval(() => {
       // Fluctuate market index prices slightly
       const updatedMarkets = markets.map((asset) => {
@@ -169,7 +183,7 @@ export default function App() {
     }, 3000);
 
     return () => clearInterval(ticker);
-  }, [markets, positions, autoTradingEnabled, signals]);
+  }, [markets, positions, autoTradingEnabled, signals, wsStatus]);
 
   // Main viewport router mapping
   const renderViewport = () => {

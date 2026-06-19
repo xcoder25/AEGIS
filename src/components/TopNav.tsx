@@ -83,7 +83,7 @@ export default function TopNav() {
           }`}>
             {backendMode === 'custom' 
               ? (backendConnectionState === 'connected' ? 'Live Custom API' : 'Custom Connecting') 
-              : 'Simulator Sandbox'}
+              : 'Coinbase Live'}
           </span>
         </div>
         <div className="hidden lg:flex items-center gap-1.5 border-l border-slate-800 pl-4">

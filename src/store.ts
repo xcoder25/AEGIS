@@ -127,6 +127,19 @@ const getSavedAuth = () => {
   }
 };
 
+const sendWsAction = (type: string, payload?: any): boolean => {
+  const ws = typeof window !== 'undefined' ? (window as any).aegisWsClient : null;
+  if (ws && ws.readyState === 1) { // 1 is WebSocket.OPEN
+    try {
+      ws.send(JSON.stringify({ type, payload }));
+      return true;
+    } catch (err) {
+      console.warn('[WebSocket] Failed to send action:', err);
+    }
+  }
+  return false;
+};
+
 const initialAuth = getSavedAuth();
 
 export const useTradingStore = create<TradingStore>((set, get) => ({
@@ -351,120 +364,45 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
   autoTradingEnabled: false,
   toggleAutoTrading: () => {
     const nextState = !get().autoTradingEnabled;
+    if (sendWsAction('TOGGLE_AUTO_TRADING', { enabled: nextState })) {
+      return;
+    }
     set({ autoTradingEnabled: nextState });
     get().addNotification(
       nextState ? 'Auto mode enabled. Trading engine is online.' : 'Auto Mode disabled. Relies on Copilot execution approval.',
       nextState ? 'alert' : 'info'
     );
   },
-  setAutoTrading: (enabled) => set({ autoTradingEnabled: enabled }),
+  setAutoTrading: (enabled) => {
+    if (sendWsAction('TOGGLE_AUTO_TRADING', { enabled })) {
+      return;
+    }
+    set({ autoTradingEnabled: enabled });
+  },
 
   // Account stats matching premium dashboard targets
-  accountBalance: 124750.00,
-  equity: 127812.45,
-  dailyPnL: 2145.80,
-  weeklyPnL: 8940.12,
-  winRate: 64.8,
-  maxDrawdown: 3.2,
-  drawdownPercent: 1.15,
+  accountBalance: 100000.00,
+  equity: 100000.00,
+  dailyPnL: 0.00,
+  weeklyPnL: 0.00,
+  winRate: 0.0,
+  maxDrawdown: 0.0,
+  drawdownPercent: 0.0,
 
   // Initial Markets Set
   markets: [
     { symbol: 'BTC/USDT', name: 'Bitcoin / US Dollar Tether', price: 92450.00, change: 1840.50, changePercent: 2.03, volume: 1854200000, trend: 'up', history: generateHistory(92450), assetClass: 'crypto' },
     { symbol: 'ETH/USDT', name: 'Ethereum / US Dollar Tether', price: 3420.75, change: -45.10, changePercent: -1.30, volume: 924000000, trend: 'down', history: generateHistory(3420), assetClass: 'crypto' },
-    { symbol: 'EUR/USD', name: 'Euro / US Dollar', price: 1.08450, change: 0.00210, changePercent: 0.19, volume: 4500000000, trend: 'up', history: generateHistory(1.0845), assetClass: 'forex' },
-    { symbol: 'GBP/USD', name: 'British Pound / US Dollar', price: 1.26420, change: -0.00140, changePercent: -0.11, volume: 3820000000, trend: 'down', history: generateHistory(1.2642), assetClass: 'forex' },
-    { symbol: 'XAU/USD', name: 'Gold / US Dollar', price: 2342.10, change: 18.30, changePercent: 0.79, volume: 1250000000, trend: 'up', history: generateHistory(2342), assetClass: 'commodity' },
-    { symbol: 'USO/USD', name: 'Crude Oil', price: 78.45, change: -1.20, changePercent: -1.51, volume: 640000000, trend: 'down', history: generateHistory(78.45), assetClass: 'commodity' },
-    { symbol: 'SPX500', name: 'S&P 500 Index', price: 5432.50, change: 34.20, changePercent: 0.63, volume: 8200000000, trend: 'up', history: generateHistory(5432), assetClass: 'index' },
-    { symbol: 'NAS100', name: 'Nasdaq 100 Index', price: 18540.20, change: 154.60, changePercent: 0.84, volume: 9800000000, trend: 'up', history: generateHistory(18540), assetClass: 'index' },
   ],
 
   // AI Signals with explanations, reasoning metrics, regimes
-  signals: [
-    {
-      id: 'sig-001',
-      symbol: 'BTC/USDT',
-      assetClass: 'crypto',
-      direction: 'buy',
-      confidence: 88,
-      strategy: 'Breakout Momentum',
-      riskScore: 3,
-      explanation: 'Bitcoin displays high volumes breaking out above the $92,000 key daily structural resistance. Supported by strong on-chain network activity and dynamic buy orders clustering on the order-book depth margins.',
-      timestamp: '2026-06-01T23:15:00Z',
-      status: 'pending',
-      marketRegime: 'Bullish Volatile Coherence',
-      similarSetupsCount: 14,
-    },
-    {
-      id: 'sig-002',
-      symbol: 'XAU/USD',
-      assetClass: 'commodity',
-      direction: 'buy',
-      confidence: 76,
-      strategy: 'Mean Reversion',
-      riskScore: 2,
-      explanation: 'Gold is trading -2.4 standard deviations from its 20-period moving average on the 4-hour chart. The 14-period RSI shows positive divergence near oversold thresholds signaling high-probability relief rebound.',
-      timestamp: '2026-06-01T23:08:00Z',
-      status: 'pending',
-      marketRegime: 'Mean-Reverting Oversold Congestion',
-      similarSetupsCount: 22,
-    },
-    {
-      id: 'sig-003',
-      symbol: 'EUR/USD',
-      assetClass: 'forex',
-      direction: 'sell',
-      confidence: 65,
-      strategy: 'Trend Following',
-      riskScore: 4,
-      explanation: 'The EUR/USD trend is displaying structural fatigue near the multi-week descending supply channel. Momentum indices are flattening while short-duration moving-averages reflect a bearish crossing setup.',
-      timestamp: '2026-06-01T22:50:00Z',
-      status: 'approved',
-      marketRegime: 'Bearish Ordered Flow',
-      similarSetupsCount: 9,
-    },
-  ],
+  signals: [],
 
   // Positions
-  positions: [
-    {
-      id: 'pos-101',
-      symbol: 'BTC/USDT',
-      assetClass: 'crypto',
-      direction: 'long',
-      size: 0.85,
-      entryPrice: 91600.00,
-      currentPrice: 92450.00,
-      pnl: 722.50,
-      pnlPercent: 0.93,
-      margin: 3910.00,
-      isAuto: true,
-      timestamp: '2026-06-01T20:10:00Z'
-    },
-    {
-      id: 'pos-102',
-      symbol: 'SPX500',
-      assetClass: 'index',
-      direction: 'long',
-      size: 15,
-      entryPrice: 5412.00,
-      currentPrice: 5432.50,
-      pnl: 307.50,
-      pnlPercent: 0.38,
-      margin: 1623.60,
-      isAuto: false,
-      timestamp: '2026-06-01T21:44:00Z'
-    }
-  ],
+  positions: [],
 
   // Past executed trades
-  trades: [
-    { id: 'trd-091', symbol: 'NAS100', assetClass: 'index', direction: 'long', size: 10, entryPrice: 18420.00, exitPrice: 18540.20, pnl: 1202.00, pnlPercent: 0.65, strategy: 'Breakout Momentum', status: 'profit', timestamp: '2026-06-01T19:30:00Z', execTime: '02h 45m' },
-    { id: 'trd-092', symbol: 'GBP/USD', assetClass: 'forex', direction: 'short', size: 250000, entryPrice: 1.26850, exitPrice: 1.26420, pnl: 1075.00, pnlPercent: 0.34, strategy: 'Trend Following', status: 'profit', timestamp: '2026-06-01T17:15:00Z', execTime: '05h 10m' },
-    { id: 'trd-093', symbol: 'USO/USD', assetClass: 'commodity', direction: 'long', size: 500, entryPrice: 79.80, exitPrice: 78.45, pnl: -675.00, pnlPercent: -1.69, strategy: 'Volatility Expansion', status: 'loss', timestamp: '2026-06-01T15:05:00Z', execTime: '01h 20m' },
-    { id: 'trd-094', symbol: 'ETH/USDT', assetClass: 'crypto', direction: 'long', size: 4.5, entryPrice: 3380.00, exitPrice: 3420.75, pnl: 183.38, pnlPercent: 1.21, strategy: 'Mean Reversion', status: 'profit', timestamp: '2026-06-01T11:40:00Z', execTime: '03h 05m' }
-  ],
+  trades: [],
 
   // 5 Trading strategies with rich settings
   strategies: [
@@ -482,17 +420,12 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
     maxDrawdown: 5,
     maxOpenTrades: 5,
     riskPerTrade: 1.5,
-    currentExposure: 5533.60, // sum of current margin
-    liquidValue: 127812.45
+    currentExposure: 0.00, // sum of current margin
+    liquidValue: 100000.00
   },
 
   // Trade Memories (RAG DB)
-  memories: [
-    { id: 'mem-01', symbol: 'BTC/USDT', strategy: 'Breakout Momentum', regime: 'Bullish Volatile Trend', pnl: 4850.00, pnlPercent: 5.28, type: 'win', details: 'Perfect entry when volume exceeds 2.5x 20-period VWAP average. Handled standard deviation slippage by buffering limit orders in deep margin spreads.', timestamp: '2026-05-28', patternMatchScore: 96 },
-    { id: 'mem-02', symbol: 'ETH/USDT', strategy: 'Mean Reversion', regime: 'Low Volatility Squeeze', pnl: -1450.00, pnlPercent: -1.78, type: 'loss', details: 'Failed setup. RSI showed overbought but broader asset class correlation forced a continuation breach through standard deviation margins.', timestamp: '2026-05-25', patternMatchScore: 92 },
-    { id: 'mem-03', symbol: 'GBP/USD', strategy: 'Trend Following', regime: 'Bearish Ordered Expansion', pnl: 2840.00, pnlPercent: 2.14, type: 'win', details: 'Highly secure directional flow during NY session opening. Moving average alignment correlated with macroeconomic debt parameters.', timestamp: '2026-05-20', patternMatchScore: 89 },
-    { id: 'mem-04', symbol: 'XAU/USD', strategy: 'Mean Reversion', regime: 'Bullish Counter-Trend Squeeze', pnl: -970.00, pnlPercent: -1.25, type: 'loss', details: 'Premature mean-reversion counter entry. Gold stayed oversold for multiple sessions because of extreme safety bond allocation flows.', timestamp: '2026-05-18', patternMatchScore: 87 }
-  ],
+  memories: [],
 
   // Chat-style interface messages
   chatMessages: [
@@ -503,10 +436,7 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
   setSelectedSignal: (sig) => set({ selectedSignal: sig }),
 
   // Notification lists
-  notifications: [
-    { id: 'notif-01', text: 'AI Signal generated: BTC/USDT Breakout buy setup with 88% confidence.', timestamp: '23:15:20', type: 'signal' },
-    { id: 'notif-02', text: 'Portfolio Risk is healthy. Net exposure is within safe limits (4.33%).', timestamp: '23:05:00', type: 'info' }
-  ],
+  notifications: [],
 
   // Mutation executors
   addNotification: (text, type = 'info') => {
@@ -522,92 +452,24 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
   clearNotifications: () => set({ notifications: [] }),
 
   approveSignal: (signalId) => {
-    const state = get();
-    const signal = state.signals.find(s => s.id === signalId);
-    if (!signal) return;
-
-    // Check if symbol is already traded to prevent limits
-    if (state.positions.length >= state.riskLimits.maxOpenTrades) {
-      state.addNotification(`Risk alert: Max open positions count reached (${state.riskLimits.maxOpenTrades}). Close active items first.`, 'alert');
+    if (sendWsAction('APPROVE_SIGNAL', { signalId })) {
       return;
     }
-
-    // Convert signal state to Position
-    const asset = state.markets.find(m => m.symbol === signal.symbol);
-    const entryPrice = asset ? asset.price : 1000;
-    
-    // Calculate simulated margin size
-    const tradeSize = parseFloat((3000 / entryPrice).toFixed(4));
-    
-    const newPosition: Position = {
-      id: `pos-${Date.now()}`,
-      symbol: signal.symbol,
-      assetClass: signal.assetClass,
-      direction: signal.direction === 'buy' ? 'long' : 'short',
-      size: tradeSize > 0 ? tradeSize : 1,
-      entryPrice,
-      currentPrice: entryPrice,
-      pnl: 0,
-      pnlPercent: 0,
-      margin: 3000,
-      isAuto: false, // Manual approval
-      timestamp: new Date().toISOString()
-    };
-
-    // Update state
-    set((state) => ({
-      signals: state.signals.map(s => s.id === signalId ? { ...s, status: 'approved' } : s),
-      positions: [...state.positions, newPosition]
-    }));
-
-    state.addNotification(`Approved AI Signal: Executed ${newPosition.direction.toUpperCase()} order on ${newPosition.symbol} at ${newPosition.entryPrice}`, 'trade');
+    get().addNotification('Error: Not connected to Live Server. Cannot approve signal offline.', 'alert');
   },
 
   rejectSignal: (signalId) => {
-    const signal = get().signals.find(s => s.id === signalId);
-    set((state) => ({
-      signals: state.signals.map(s => s.id === signalId ? { ...s, status: 'rejected' } : s)
-    }));
-    if (signal) {
-      get().addNotification(`Rejected Signal: Suspended ${signal.strategy} on ${signal.symbol}`, 'info');
+    if (sendWsAction('REJECT_SIGNAL', { signalId })) {
+      return;
     }
+    get().addNotification('Error: Not connected to Live Server.', 'alert');
   },
 
   closePosition: (positionId) => {
-    const state = get();
-    const pos = state.positions.find(p => p.id === positionId);
-    if (!pos) return;
-
-    // Convert to PastTrade history entry
-    const newTrade: PastTrade = {
-      id: `trd-${Date.now()}`,
-      symbol: pos.symbol,
-      assetClass: pos.assetClass,
-      direction: pos.direction,
-      size: pos.size,
-      entryPrice: pos.entryPrice,
-      exitPrice: pos.currentPrice,
-      pnl: pos.pnl,
-      pnlPercent: pos.pnlPercent,
-      strategy: 'Manual Exit',
-      status: pos.pnl >= 0 ? 'profit' : 'loss',
-      timestamp: new Date().toISOString(),
-      execTime: 'Live'
-    };
-
-    // Calculate balance updates
-    const netBalance = state.accountBalance + pos.pnl;
-    const netEquity = state.equity + pos.pnl;
-
-    set((state) => ({
-      accountBalance: netBalance,
-      equity: netEquity,
-      dailyPnL: state.dailyPnL + pos.pnl,
-      positions: state.positions.filter(p => p.id !== positionId),
-      trades: [newTrade, ...state.trades]
-    }));
-
-    state.addNotification(`Closed position: ${pos.symbol} at ${pos.currentPrice}. PnL: $${pos.pnl.toFixed(2)}`, 'trade');
+    if (sendWsAction('CLOSE_POSITION', { positionId })) {
+      return;
+    }
+    get().addNotification('Error: Not connected to Live Server.', 'alert');
   },
 
   updateStrategy: (id, enabled, activeWeight) => set((state) => ({
@@ -634,50 +496,17 @@ export const useTradingStore = create<TradingStore>((set, get) => ({
   }),
 
   emergencyStop: () => {
-    const state = get();
-    if (state.positions.length === 0 && !state.autoTradingEnabled) {
-      state.addNotification('Emergency protocol active: All systems already fully halted.', 'alert');
+    if (sendWsAction('EMERGENCY_STOP')) {
       return;
     }
-    
-    // Close everything
-    state.closeAllTrades();
-    set({ autoTradingEnabled: false });
-    state.addNotification('CRITICAL EMERGENCY HALT: Locked all systems. Terminated active auto configurations and closed all leverage position weights.', 'alert');
+    get().addNotification('Error: Not connected to Live Server. Emergency stop signal failed.', 'alert');
   },
 
   closeAllTrades: () => {
-    const state = get();
-    if (state.positions.length === 0) return;
-
-    // Convert everything to past trade logs
-    const closedTrades: PastTrade[] = state.positions.map(pos => ({
-      id: `trd-closed-${Date.now()}-${Math.random().toString(36).substring(3)}`,
-      symbol: pos.symbol,
-      assetClass: pos.assetClass,
-      direction: pos.direction,
-      size: pos.size,
-      entryPrice: pos.entryPrice,
-      exitPrice: pos.currentPrice,
-      pnl: pos.pnl,
-      pnlPercent: pos.pnlPercent,
-      strategy: 'Emergency Close All',
-      status: pos.pnl >= 0 ? 'profit' : 'loss',
-      timestamp: new Date().toISOString(),
-      execTime: '0.1s'
-    }));
-
-    const totalPnL = state.positions.reduce((acc, curr) => acc + curr.pnl, 0);
-
-    set((state) => ({
-      accountBalance: state.accountBalance + totalPnL,
-      equity: state.equity + totalPnL,
-      dailyPnL: state.dailyPnL + totalPnL,
-      positions: [],
-      trades: [...closedTrades, ...state.trades]
-    }));
-
-    state.addNotification(`Emergency exit: Force terminated all ${closedTrades.length} open position states. Net closed PnL impact: $${totalPnL.toFixed(2)}`, 'alert');
+    if (sendWsAction('CLOSE_ALL_TRADES')) {
+      return;
+    }
+    get().addNotification('Error: Not connected to Live Server. Close all trades signal failed.', 'alert');
   },
 
   updateMarkets: (newAssets) => set({ markets: newAssets }),

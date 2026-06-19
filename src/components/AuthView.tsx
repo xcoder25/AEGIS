@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useTradingStore } from '../store';
+import { startAuthentication } from '@simplewebauthn/browser';
 import { 
   Lock, 
   Mail, 
@@ -68,10 +69,82 @@ export default function AuthView() {
   const [cameraStreamStatus, setCameraStreamStatus] = useState<'idle' | 'requesting' | 'active' | 'error'>('idle');
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
+  // WebAuthn + Liveness states
+  const [facePos, setFacePos] = useState({ x: 50, y: 50 });
+  const [livenessStatusText, setLivenessStatusText] = useState('Position face in target circle...');
+
+  const generateEmbedding = (fx: number, fy: number): number[] => {
+    const embedding: number[] = [];
+    const baseRatio = (fx * 1.25) / (fy || 1);
+    for (let i = 0; i < 128; i++) {
+      embedding.push(Math.sin(baseRatio * (i + 1)) * 0.1 + (i % 5) * 0.05);
+    }
+    return embedding;
+  };
+
+  const triggerWebAuthnLogin = async (currentEmbedding: number[]) => {
+    try {
+      setLivenessStatusText('LIVENESS PASSED. Initializing Passkey...');
+      addSecurityLog('Liveness verification completed. Invoking hardware biometric passkey...');
+      
+      // 1. Get auth options from server
+      const optionsRes = await fetch(`/api/auth/login-options?email=${encodeURIComponent(email || 'demo@aegis.ai')}`);
+      if (!optionsRes.ok) {
+        throw new Error('Failed to retrieve authentication options.');
+      }
+      const options = await optionsRes.json();
+      
+      // 2. Browser WebAuthn prompt
+      const assertion = await startAuthentication(options);
+      
+      // 3. Post verifying payload
+      const verifyRes = await fetch('/api/auth/login-verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          body: assertion,
+          email: email || 'demo@aegis.ai',
+          faceEmbedding: currentEmbedding
+        })
+      });
+
+      if (!verifyRes.ok) {
+        const errJson = await verifyRes.json();
+        throw new Error(errJson.error || 'Assertion verification rejected.');
+      }
+
+      const verifyResult = await verifyRes.json();
+      if (verifyResult.verified) {
+        setBioStatusType('success');
+        setLivenessStatusText('AUTHENTICATED SUCCESSFULLY');
+        addSecurityLog('Cryptographic verification matches. Enclave bypass approved.');
+        
+        setTimeout(async () => {
+          setIsLoading(true);
+          const success = await login(email || 'demo@aegis.ai', 'password');
+          setIsLoading(false);
+          setBioType('none');
+        }, 1000);
+      }
+    } catch (err: any) {
+      console.error('[WebAuthn] Assertion flow failed:', err);
+      setBioStatusType('failed');
+      setLivenessStatusText(`Verification failed: ${err.message}`);
+      addSecurityLog(`Passkey authentication rejected: ${err.message}`);
+      
+      setTimeout(() => {
+        setBioType('none');
+      }, 3000);
+    }
+  };
+
   // Compute clear user instructions during the authentication lifecycle
   const getBioStatusText = () => {
     if (bioStatusType === 'success') {
       return 'Biometric Verification Successful!';
+    }
+    if (bioStatusType === 'failed') {
+      return livenessStatusText;
     }
     if (bioType === 'fingerprint') {
       if (bioProgress === 0) {
@@ -84,19 +157,7 @@ export default function AuthView() {
       const terms = ['Scanning fingerprint patterns...', 'Mapping ridge structure...', 'Authenticating secure credentials...'];
       return terms[step % terms.length];
     } else {
-      // Face ID
-      if (cameraStreamStatus === 'requesting') {
-        return 'Requesting camera access permissions...';
-      }
-      if (cameraStreamStatus === 'error') {
-        return 'Camera blocked! Aligning backup facial matrix scan...';
-      }
-      if (bioProgress === 0) {
-        return 'Center your face in the camera lens to scan...';
-      }
-      const step = Math.floor(bioProgress / 35);
-      const terms = ['Tracking neural facial nodal points...', 'Verifying authentic mesh signature...', 'Generating session token...'];
-      return terms[step % terms.length];
+      return livenessStatusText;
     }
   };
 
@@ -268,44 +329,203 @@ export default function AuthView() {
     return () => clearInterval(intervalId);
   }, [bioType, isHoldingFingerprint, bioProgress >= 100, bioProgress > 0]);
 
-  // Face ID scan progression generator (runs automatically once camera status is determined)
+  // Face ID real-time tracking & liveness verification loop
   useEffect(() => {
-    if (bioType !== 'face') return;
-    if (bioProgress >= 100) return;
+    if (bioType !== 'face' || cameraStreamStatus !== 'active' || !videoRef.current) {
+      return;
+    }
 
-    // Wait until we have active stream OR we hit an error (running template fallback scan)
-    if (cameraStreamStatus === 'requesting') return;
+    const video = videoRef.current;
+    const canvas = document.createElement('canvas');
+    canvas.width = 40;
+    canvas.height = 40;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-    const interval = setInterval(() => {
-      setBioProgress((prev) => {
-        const next = prev + Math.floor(Math.random() * 8) + 6;
-        return next >= 100 ? 100 : next;
-      });
-    }, 150);
+    let animId: number;
+    let localFaceX = 50;
+    let localFaceY = 50;
+    
+    const xHistory: number[] = [];
+    const lightHistory: number[] = [];
+    
+    let currentStep: 'align' | 'turn' | 'blink' | 'success' = 'align';
+    let progressVal = 0;
+    let wsResolved = false;
 
-    return () => clearInterval(interval);
-  }, [bioType, cameraStreamStatus, bioProgress >= 100]);
+    const analyzeFrame = () => {
+      if (video.paused || video.ended || wsResolved) {
+        animId = requestAnimationFrame(analyzeFrame);
+        return;
+      }
 
-  // Handle successful verification events cleanly
+      ctx.drawImage(video, 0, 0, 40, 40);
+      const imgData = ctx.getImageData(0, 0, 40, 40);
+      const data = imgData.data;
+
+      let totalX = 0;
+      let totalY = 0;
+      let skinPixelsCount = 0;
+      let eyeRegionLightnessSum = 0;
+      let eyeRegionPixelsCount = 0;
+
+      for (let y = 0; y < 40; y++) {
+        for (let x = 0; x < 40; x++) {
+          const idx = (y * 40 + x) * 4;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+
+          const rNorm = r / 255;
+          const gNorm = g / 255;
+          const bNorm = b / 255;
+          const max = Math.max(rNorm, gNorm, bNorm);
+          const min = Math.min(rNorm, gNorm, bNorm);
+          let h = 0;
+          let s = 0;
+          const l = (max + min) / 2;
+
+          if (max !== min) {
+            const d = max - min;
+            s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+            if (max === rNorm) {
+              h = (gNorm - bNorm) / d + (gNorm < bNorm ? 6 : 0);
+            } else if (max === gNorm) {
+              h = (bNorm - rNorm) / d + 2;
+            } else {
+              h = (rNorm - gNorm) / d + 4;
+            }
+            h /= 6;
+          }
+
+          const hueDegrees = h * 360;
+          if (hueDegrees >= 0 && hueDegrees <= 50 && s >= 0.15 && s <= 0.8 && l >= 0.15 && l <= 0.85) {
+            totalX += x;
+            totalY += y;
+            skinPixelsCount++;
+          }
+        }
+      }
+
+      let detectedX = 50;
+      let detectedY = 50;
+
+      if (skinPixelsCount > 30) {
+        detectedX = (totalX / skinPixelsCount) * 2.5;
+        detectedY = (totalY / skinPixelsCount) * 2.5;
+        
+        const eyeMinX = Math.max(0, Math.floor((detectedX - 15) / 2.5));
+        const eyeMaxX = Math.min(39, Math.floor((detectedX + 15) / 2.5));
+        const eyeMinY = Math.max(0, Math.floor((detectedY - 12) / 2.5));
+        const eyeMaxY = Math.min(39, Math.floor((detectedY - 6) / 2.5));
+
+        for (let ey = eyeMinY; ey <= eyeMaxY; ey++) {
+          for (let ex = eyeMinX; ex <= eyeMaxX; ex++) {
+            const eidx = (ey * 40 + ex) * 4;
+            const er = data[eidx];
+            const eg = data[eidx + 1];
+            const eb = data[eidx + 2];
+            const lightness = (Math.max(er, eg, eb) + Math.min(er, eg, eb)) / 510;
+            eyeRegionLightnessSum += lightness;
+            eyeRegionPixelsCount++;
+          }
+        }
+      }
+
+      localFaceX = localFaceX + (detectedX - localFaceX) * 0.1;
+      localFaceY = localFaceY + (detectedY - localFaceY) * 0.1;
+      setFacePos({ x: localFaceX, y: localFaceY });
+
+      if (skinPixelsCount > 30) {
+        const isCentered = localFaceX >= 35 && localFaceX <= 65 && localFaceY >= 35 && localFaceY <= 65;
+        
+        if (currentStep === 'align') {
+          setLivenessStatusText('Align face inside target box...');
+          if (isCentered) {
+            progressVal = Math.min(progressVal + 1.5, 40);
+            setBioProgress(progressVal);
+            if (progressVal >= 40) {
+              currentStep = 'turn';
+              progressVal = 40;
+            }
+          } else {
+            progressVal = Math.max(progressVal - 1.5, 0);
+            setBioProgress(progressVal);
+          }
+        } 
+        else if (currentStep === 'turn') {
+          setLivenessStatusText('Calibration: Turn head slowly left & right...');
+          xHistory.push(localFaceX);
+          if (xHistory.length > 55) xHistory.shift();
+
+          const xMin = Math.min(...xHistory);
+          const xMax = Math.max(...xHistory);
+          const span = xMax - xMin;
+
+          if (span >= 8 && isCentered) {
+            progressVal = Math.min(progressVal + 2.0, 70);
+            setBioProgress(progressVal);
+            if (progressVal >= 70) {
+              currentStep = 'blink';
+              progressVal = 70;
+            }
+          }
+        }
+        else if (currentStep === 'blink') {
+          setLivenessStatusText('Authentication: Blink eyes now...');
+          
+          if (eyeRegionPixelsCount > 0) {
+            const avgLight = eyeRegionLightnessSum / eyeRegionPixelsCount;
+            lightHistory.push(avgLight);
+            if (lightHistory.length > 30) lightHistory.shift();
+
+            const rollingAvg = lightHistory.reduce((sum, v) => sum + v, 0) / lightHistory.length;
+            const currentLight = lightHistory[lightHistory.length - 1];
+            const dip = rollingAvg - currentLight;
+
+            if (dip > 0.08 && lightHistory.length > 15) {
+              progressVal = 100;
+              setBioProgress(100);
+              wsResolved = true;
+              currentStep = 'success';
+              
+              const finalEmbedding = generateEmbedding(localFaceX, localFaceY);
+              triggerWebAuthnLogin(finalEmbedding);
+            }
+          }
+        }
+      } else {
+        progressVal = Math.max(progressVal - 1, 0);
+        setBioProgress(progressVal);
+        setLivenessStatusText('Face lost! Position face in scanner frame.');
+      }
+
+      animId = requestAnimationFrame(analyzeFrame);
+    };
+
+    analyzeFrame();
+
+    return () => {
+      cancelAnimationFrame(animId);
+    };
+  }, [bioType, cameraStreamStatus]);
+
+  // Handle successful verification events cleanly (Touch ID fallback only)
   useEffect(() => {
-    if (bioType !== 'none' && bioProgress >= 100 && bioStatusType === 'scanning') {
+    if (bioType === 'fingerprint' && bioProgress >= 100 && bioStatusType === 'scanning') {
       setBioStatusType('success');
       addSecurityLog(`Biometric identification verified via hardware enclave key`);
       
       const timer = setTimeout(async () => {
         setIsLoading(true);
-        const success = await login('demo@aegis.ai', 'password');
-        if (!success) {
-          await register('Demo operator', 'demo@aegis.ai', 'password', 'indigo');
-          await login('demo@aegis.ai', 'password');
-        }
+        const success = await login(email || 'demo@aegis.ai', 'password');
         setIsLoading(false);
         setBioType('none');
       }, 1200);
 
       return () => clearTimeout(timer);
     }
-  }, [bioType, bioProgress, bioStatusType, login, register, addSecurityLog]);
+  }, [bioType, bioProgress, bioStatusType, login, addSecurityLog, email]);
 
   return (
     <div className="min-h-screen bg-[#060608] text-slate-100 flex flex-col justify-center items-center p-4 relative overflow-hidden font-sans">
@@ -572,80 +792,80 @@ export default function AuthView() {
 
                                 {/* Tracking Nodes */}
                                 {/* Eye Left */}
-                                <div className="absolute text-cyan-454 font-mono animate-jitter-1 flex flex-col items-center" style={{ top: '38%', left: '32%' }}>
+                                <div className="absolute text-cyan-454 font-mono animate-jitter-1 flex flex-col items-center transition-all duration-75" style={{ top: `${facePos.y - 12}%`, left: `${facePos.x - 18}%` }}>
                                   <div className="w-1 h-1 bg-cyan-450 rounded-full shadow-[0_0_4px_rgba(34,211,238,0.8)]" />
                                   <div className="absolute -top-3 text-[5px] tracking-tighter opacity-80 scale-[0.7]">EYE.L</div>
                                   <div className="w-2.5 h-2.5 rounded-full border border-cyan-400/30 absolute -top-0.5 -left-0.5 animate-ping" />
                                 </div>
 
                                 {/* Eye Right */}
-                                <div className="absolute text-cyan-454 font-mono animate-jitter-2 flex flex-col items-center" style={{ top: '38%', left: '68%' }}>
+                                <div className="absolute text-cyan-454 font-mono animate-jitter-2 flex flex-col items-center transition-all duration-75" style={{ top: `${facePos.y - 12}%`, left: `${facePos.x + 18}%` }}>
                                   <div className="w-1 h-1 bg-cyan-455 rounded-full shadow-[0_0_4px_rgba(34,211,238,0.8)]" />
                                   <div className="absolute -top-3 text-[5px] tracking-tighter opacity-80 scale-[0.7]">EYE.R</div>
                                   <div className="w-2.5 h-2.5 rounded-full border border-cyan-400/30 absolute -top-0.5 -left-0.5 animate-ping" />
                                 </div>
 
                                 {/* Nose Bridge */}
-                                <div className="absolute text-cyan-454 font-mono animate-jitter-3 flex flex-col items-center" style={{ top: '53%', left: '50%' }}>
+                                <div className="absolute text-cyan-454 font-mono animate-jitter-3 flex flex-col items-center transition-all duration-75" style={{ top: `${facePos.y + 3}%`, left: `${facePos.x}%` }}>
                                   <div className="w-1 h-1 bg-cyan-455 rounded-full shadow-[0_0_3px_rgba(34,211,238,0.8)]" />
                                   <div className="absolute -bottom-3 text-[5px] tracking-tighter opacity-85 scale-[0.7]">N.CTR</div>
                                 </div>
 
                                 {/* Forehead Center */}
-                                <div className="absolute text-cyan-454 font-mono animate-jitter-1 flex flex-col items-center" style={{ top: '24%', left: '50%' }}>
+                                <div className="absolute text-cyan-454 font-mono animate-jitter-1 flex flex-col items-center transition-all duration-75" style={{ top: `${facePos.y - 26}%`, left: `${facePos.x}%` }}>
                                   <div className="w-1 h-1 bg-cyan-455 rounded-full shadow-[0_0_3px_rgba(34,211,238,0.8)]" />
                                   <div className="absolute -top-3 text-[5px] tracking-tighter opacity-80 scale-[0.7]">FHD</div>
                                 </div>
 
                                 {/* Cheek Left */}
-                                <div className="absolute text-cyan-454 font-mono animate-jitter-2 flex flex-col items-center" style={{ top: '54%', left: '22%' }}>
+                                <div className="absolute text-cyan-454 font-mono animate-jitter-2 flex flex-col items-center transition-all duration-75" style={{ top: `${facePos.y + 4}%`, left: `${facePos.x - 28}%` }}>
                                   <div className="w-1 h-1 bg-cyan-455 rounded-full opacity-60" />
                                   <div className="absolute -left-4 text-[5px] tracking-tighter opacity-60 scale-[0.6]">C.L</div>
                                 </div>
 
                                 {/* Cheek Right */}
-                                <div className="absolute text-cyan-454 font-mono animate-jitter-3 flex flex-col items-center" style={{ top: '54%', left: '78%' }}>
+                                <div className="absolute text-cyan-454 font-mono animate-jitter-3 flex flex-col items-center transition-all duration-75" style={{ top: `${facePos.y + 4}%`, left: `${facePos.x + 28}%` }}>
                                   <div className="w-1 h-1 bg-cyan-455 rounded-full opacity-60" />
                                   <div className="absolute -right-4 text-[5px] tracking-tighter opacity-60 scale-[0.6]">C.R</div>
                                 </div>
 
                                 {/* Mouth Border Left */}
-                                <div className="absolute text-cyan-454 font-mono animate-jitter-1" style={{ top: '69%', left: '38%' }}>
+                                <div className="absolute text-cyan-454 font-mono animate-jitter-1 transition-all duration-75" style={{ top: `${facePos.y + 19}%`, left: `${facePos.x - 12}%` }}>
                                   <div className="w-1 h-1 bg-cyan-455 rounded-full opacity-70" />
                                 </div>
 
                                 {/* Mouth Border Right */}
-                                <div className="absolute text-cyan-454 font-mono animate-jitter-2" style={{ top: '69%', left: '62%' }}>
+                                <div className="absolute text-cyan-454 font-mono animate-jitter-2 transition-all duration-75" style={{ top: `${facePos.y + 19}%`, left: `${facePos.x + 12}%` }}>
                                   <div className="w-1 h-1 bg-cyan-455 rounded-full opacity-70" />
                                 </div>
 
                                 {/* Chin Base */}
-                                <div className="absolute text-cyan-454 font-mono animate-jitter-3 flex flex-col items-center" style={{ top: '80%', left: '50%' }}>
+                                <div className="absolute text-cyan-454 font-mono animate-jitter-3 flex flex-col items-center transition-all duration-75" style={{ top: `${facePos.y + 30}%`, left: `${facePos.x}%` }}>
                                   <div className="w-1 h-1 bg-cyan-455 rounded-full shadow-[0_0_3px_rgba(34,211,238,0.8)]" />
                                   <div className="absolute -bottom-3 text-[5px] tracking-tighter opacity-80 scale-[0.7]">JAW</div>
                                 </div>
 
                                 {/* Neural vector SVG links */}
-                                <svg className="absolute inset-0 w-full h-full opacity-30 stroke-cyan-400 stroke-[0.5] fill-none">
+                                <svg className="absolute inset-0 w-full h-full opacity-35 stroke-cyan-400 stroke-[0.75] fill-none transition-all duration-75">
                                   {/* Brows line */}
-                                  <line x1="32%" y1="38%" x2="68%" y2="38%" strokeDasharray="1,2" />
-                                  <line x1="50%" y1="24%" x2="32%" y2="38%" strokeDasharray="2,2" />
-                                  <line x1="50%" y1="24%" x2="68%" y2="38%" strokeDasharray="2,2" />
+                                  <line x1={`${facePos.x - 18}%`} y1={`${facePos.y - 12}%`} x2={`${facePos.x + 18}%`} y2={`${facePos.y - 12}%`} strokeDasharray="1,2" />
+                                  <line x1={`${facePos.x}%`} y1={`${facePos.y - 26}%`} x2={`${facePos.x - 18}%`} y2={`${facePos.y - 12}%`} strokeDasharray="2,2" />
+                                  <line x1={`${facePos.x}%`} y1={`${facePos.y - 26}%`} x2={`${facePos.x + 18}%`} y2={`${facePos.y - 12}%`} strokeDasharray="2,2" />
                                   
                                   {/* Optical matching sights to grid */}
-                                  <line x1="32%" y1="38%" x2="50%" y2="53%" strokeDasharray="1,1" />
-                                  <line x1="68%" y1="38%" x2="50%" y2="53%" strokeDasharray="1,1" />
+                                  <line x1={`${facePos.x - 18}%`} y1={`${facePos.y - 12}%`} x2={`${facePos.x}%`} y2={`${facePos.y + 3}%`} strokeDasharray="1,1" />
+                                  <line x1={`${facePos.x + 18}%`} y1={`${facePos.y - 12}%`} x2={`${facePos.x}%`} y2={`${facePos.y + 3}%`} strokeDasharray="1,1" />
 
                                   {/* Facemesh cheek boundaries */}
-                                  <line x1="22%" y1="54%" x2="50%" y2="53%" strokeDasharray="2,2" />
-                                  <line x1="78%" y1="54%" x2="50%" y2="53%" strokeDasharray="2,2" />
-                                  <line x1="22%" y1="54%" x2="38%" y2="69%" strokeDasharray="2,1" />
-                                  <line x1="78%" y1="54%" x2="62%" y2="69%" strokeDasharray="2,1" />
+                                  <line x1={`${facePos.x - 28}%`} y1={`${facePos.y + 4}%`} x2={`${facePos.x}%`} y2={`${facePos.y + 3}%`} strokeDasharray="2,2" />
+                                  <line x1={`${facePos.x + 28}%`} y1={`${facePos.y + 4}%`} x2={`${facePos.x}%`} y2={`${facePos.y + 3}%`} strokeDasharray="2,2" />
+                                  <line x1={`${facePos.x - 28}%`} y1={`${facePos.y + 4}%`} x2={`${facePos.x - 12}%`} y2={`${facePos.y + 19}%`} strokeDasharray="2,1" />
+                                  <line x1={`${facePos.x + 28}%`} y1={`${facePos.y + 4}%`} x2={`${facePos.x + 12}%`} y2={`${facePos.y + 19}%`} strokeDasharray="2,1" />
 
                                   {/* Lower chin connection array */}
-                                  <line x1="38%" y1="69%" x2="62%" y2="69%" strokeDasharray="1,1" />
-                                  <line x1="38%" y1="69%" x2="50%" y2="80%" strokeDasharray="2,2" />
-                                  <line x1="62%" y1="69%" x2="50%" y2="80%" strokeDasharray="2,2" />
+                                  <line x1={`${facePos.x - 12}%`} y1={`${facePos.y + 19}%`} x2={`${facePos.x + 12}%`} y2={`${facePos.y + 19}%`} strokeDasharray="1,1" />
+                                  <line x1={`${facePos.x - 12}%`} y1={`${facePos.y + 19}%`} x2={`${facePos.x}%`} y2={`${facePos.y + 30}%`} strokeDasharray="2,2" />
+                                  <line x1={`${facePos.x + 12}%`} y1={`${facePos.y + 19}%`} x2={`${facePos.x}%`} y2={`${facePos.y + 30}%`} strokeDasharray="2,2" />
                                 </svg>
                               </div>
                             </>

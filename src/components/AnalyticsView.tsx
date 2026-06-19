@@ -23,39 +23,88 @@ import {
 } from 'recharts';
 import { useTradingStore } from '../store';
 
-// Mock datasets for Analytics Page
-const MONTH_PERF = [
-  { month: 'Jan', yield: 4.2 },
-  { month: 'Feb', yield: 6.8 },
-  { month: 'Mar', yield: -2.3 },
-  { month: 'Apr', yield: 8.4 },
-  { month: 'May', yield: 11.5 },
-  { month: 'Jun', yield: 2.1 } // today
-];
-
-const ASSET_PERF_DATA = [
-  { name: 'BTC/USDT', yield: 8940 },
-  { name: 'ETH/USDT', yield: 2450 },
-  { name: 'EUR/USD', yield: 1080 },
-  { name: 'XAU/USD', yield: -430 },
-  { name: 'SPX500', yield: 3100 },
-  { name: 'NAS100', yield: 5420 }
-];
-
-const DIRECTION_SPREAD = [
-  { name: 'LONG trades', value: 68, fill: '#10b981' },
-  { name: 'SHORT trades', value: 32, fill: '#f43f5e' }
-];
-
-const STRAT_EFFICIENCY = [
-  { name: 'Trend Following', rate: 71 },
-  { name: 'Breakout Momentum', rate: 58 },
-  { name: 'Mean Reversion', rate: 76 },
-  { name: 'Orderbook Delta', rate: 69 }
-];
-
 export default function AnalyticsView() {
   const { winRate, trades } = useTradingStore();
+
+  // 1. Dynamic Monthly Yield (%)
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthPnL: Record<string, number> = {};
+  const currentMonthIdx = new Date().getMonth();
+  // seed prior 6 months
+  for (let i = 5; i >= 0; i--) {
+    const idx = (currentMonthIdx - i + 12) % 12;
+    monthPnL[months[idx]] = 0;
+  }
+  trades.forEach(t => {
+    const date = new Date(t.timestamp);
+    if (!isNaN(date.getTime())) {
+      const m = months[date.getMonth()];
+      if (monthPnL[m] !== undefined) {
+        monthPnL[m] += (t.pnl / 100000.0) * 100;
+      }
+    }
+  });
+  const monthPerf = Object.entries(monthPnL).map(([month, val]) => ({
+    month,
+    yield: parseFloat(val.toFixed(2))
+  }));
+
+  // 2. Dynamic dollar Yield by Asset
+  const assetPnLMap: Record<string, number> = {
+    'BTC/USDT': 0,
+    'ETH/USDT': 0,
+    'EUR/USD': 0,
+    'GBP/USD': 0,
+    'XAU/USD': 0,
+    'USO/USD': 0,
+    'SPX500': 0,
+    'NAS100': 0,
+  };
+  trades.forEach(t => {
+    if (assetPnLMap[t.symbol] !== undefined) {
+      assetPnLMap[t.symbol] += t.pnl;
+    }
+  });
+  const assetPerfData = Object.entries(assetPnLMap).map(([name, pnl]) => ({
+    name,
+    yield: parseFloat(pnl.toFixed(2))
+  }));
+
+  // 3. Dynamic Trade Direction Spread
+  let longCount = 0;
+  let shortCount = 0;
+  trades.forEach(t => {
+    if (t.direction === 'long') longCount++;
+    else if (t.direction === 'short') shortCount++;
+  });
+  // default to 1 for both if empty to display empty distribution cleanly
+  const directionSpread = [
+    { name: 'LONG trades', value: longCount || (trades.length === 0 ? 1 : 0), fill: '#10b981' },
+    { name: 'SHORT trades', value: shortCount || (trades.length === 0 ? 1 : 0), fill: '#f43f5e' }
+  ];
+
+  // 4. Dynamic Strategy Efficiency
+  const stratStats: Record<string, { wins: number; total: number }> = {
+    'Trend Following': { wins: 0, total: 0 },
+    'Breakout Momentum': { wins: 0, total: 0 },
+    'Mean Reversion': { wins: 0, total: 0 },
+    'Volatility Expansion': { wins: 0, total: 0 },
+    'Orderbook Liquidity': { wins: 0, total: 0 },
+    'Manual Exit': { wins: 0, total: 0 }
+  };
+  trades.forEach(t => {
+    const strat = t.strategy || 'Manual Exit';
+    if (stratStats[strat]) {
+      stratStats[strat].total++;
+      if (t.status === 'profit') stratStats[strat].wins++;
+    }
+  });
+  const stratEfficiency = Object.entries(stratStats)
+    .filter(([_, stats]) => stats.total > 0 || ['Trend Following', 'Breakout Momentum', 'Mean Reversion', 'Orderbook Liquidity'].includes(_))
+    .map(([name, stats]) => ({
+      name,
+      rate: stats.total > 0 ? Math.round((stats.wins / stats.total) * 100) : 0
+    }));
 
   return (
     <div className="space-y-6">
@@ -79,7 +128,7 @@ export default function AnalyticsView() {
           <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest font-mono mb-4">Monthly Performance Yield (%)</h3>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={MONTH_PERF}>
+              <BarChart data={monthPerf}>
                 <XAxis dataKey="month" stroke="#475569" fontSize={10} tickLine={false} />
                 <YAxis stroke="#475569" fontSize={10} tickLine={false} axisLine={false} />
                 <Tooltip 
@@ -87,7 +136,7 @@ export default function AnalyticsView() {
                   itemStyle={{ fontSize: '12px', color: '#fff' }}
                 />
                 <Bar dataKey="yield">
-                  {MONTH_PERF.map((entry, index) => (
+                  {monthPerf.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={entry.yield >= 0 ? '#10b981' : '#f43f5e'} opacity={0.8} />
                   ))}
                 </Bar>
@@ -101,7 +150,7 @@ export default function AnalyticsView() {
           <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest font-mono mb-4">Total dollar Yield by Asset</h3>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={ASSET_PERF_DATA} layout="vertical">
+              <BarChart data={assetPerfData} layout="vertical">
                 <XAxis type="number" stroke="#475569" fontSize={10} tickLine={false} />
                 <YAxis dataKey="name" type="category" stroke="#475569" fontSize={10} width={70} tickLine={false} />
                 <Tooltip 
@@ -109,7 +158,7 @@ export default function AnalyticsView() {
                   itemStyle={{ fontSize: '12px', color: '#fff' }}
                 />
                 <Bar dataKey="yield">
-                  {ASSET_PERF_DATA.map((entry, index) => (
+                  {assetPerfData.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={entry.yield >= 0 ? '#6366f1' : '#f43f5e'} opacity={0.8} />
                   ))}
                 </Bar>
@@ -123,7 +172,7 @@ export default function AnalyticsView() {
           <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest font-mono mb-4">Historical Algorithm Win Rates (%)</h3>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={STRAT_EFFICIENCY}>
+              <BarChart data={stratEfficiency}>
                 <XAxis dataKey="name" stroke="#475569" fontSize={9} tickLine={false} />
                 <YAxis stroke="#475569" fontSize={10} tickLine={false} axisLine={false} domain={[0, 100]} />
                 <Tooltip 
@@ -143,7 +192,7 @@ export default function AnalyticsView() {
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
-                  data={DIRECTION_SPREAD}
+                  data={directionSpread}
                   cx="50%"
                   cy="50%"
                   innerRadius={50}
@@ -151,7 +200,7 @@ export default function AnalyticsView() {
                   paddingAngle={5}
                   dataKey="value"
                 >
-                  {DIRECTION_SPREAD.map((entry, index) => (
+                  {directionSpread.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={entry.fill} />
                   ))}
                 </Pie>
